@@ -2,9 +2,11 @@ package service
 
 import (
 	"IM/internal/model"
+	"IM/internal/storage/cache"
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 )
 
 type Hub struct {
@@ -54,17 +56,17 @@ func (h *Hub) Run() {
 
 			h.mu.RLock()
 			if msg.Type == 1 { // 私聊
-				// 简历亮点：O(1) 时间复杂度查找目标连接
 				if targetClient, ok := h.Clients[msg.Target]; ok {
-					select {
-					case targetClient.Send <- msgBytes:
-					default:
-						close(targetClient.Send)
-						delete(h.Clients, msg.Target)
-					}
+					targetClient.Send <- msgBytes
+				} else {
+					// --- 核心亮点：存入 Redis 离线列表 ---
+					// 使用 RPush 将消息存入名为 "offline:用户ID" 的 List 中
+					cache.RDB.RPush(cache.Ctx, "offline:"+msg.Target, msgBytes)
+					// 设置过期时间（如 7 天），防止 Redis 内存被僵尸用户撑爆
+					cache.RDB.Expire(cache.Ctx, "offline:"+msg.Target, time.Hour*24*7)
 				}
 			} else { // 群聊逻辑
-				for id, client := range h.Clients {
+				for _, client := range h.Clients {
 					// 排除自己或发送给所有人
 					client.Send <- msgBytes
 				}

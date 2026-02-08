@@ -16,7 +16,7 @@ const (
 type Client struct {
 	Hub  *Hub
 	ID   string
-	Conn websocket.Conn
+	Conn *websocket.Conn
 	Send chan []byte
 }
 
@@ -32,6 +32,14 @@ func (c *Client) Read() {
 		c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
 	})
+
+	for {
+		_, payload, err := c.Conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		c.Hub.Broadcast <- payload
+	}
 }
 
 func (c *Client) Write() {

@@ -3,11 +3,13 @@ package main
 import (
 	"IM/internal/controller"
 	"IM/internal/service"
+	"IM/internal/storage/cache"
 	"log"
 	"net/http"
 )
 
 func main() {
+	cache.InitRedis()
 	hub := service.NewHub()
 	go hub.Run()
 

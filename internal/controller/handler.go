@@ -2,6 +2,7 @@ package controller
 
 import (
 	"IM/internal/service"
+	"IM/internal/storage/cache"
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
@@ -36,6 +37,19 @@ func ServeWs(hub *service.Hub, w http.ResponseWriter, r *http.Request) {
 	}
 
 	client.Hub.Register <- client
+	client.Hub.Register <- client
+
+	// --- 添加：拉取离线消息 ---
+	go func(c *service.Client) {
+		offlineKey := "offline:" + c.ID
+		// 一次性取出所有消息（或者分页取出）
+		msgs, _ := cache.RDB.LRange(cache.Ctx, offlineKey, 0, -1).Result()
+		for _, m := range msgs {
+			c.Send <- []byte(m)
+		}
+		// 推送完后删除该 Key
+		cache.RDB.Del(cache.Ctx, offlineKey)
+	}(client)
 
 	// start
 	go client.Write()
