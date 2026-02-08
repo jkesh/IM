@@ -17,18 +17,18 @@ var upgrader = websocket.Upgrader{
 }
 
 func ServeWs(hub *service.Hub, w http.ResponseWriter, r *http.Request) {
+	tokenString := r.URL.Query().Get("token")
+	claims, err := verifyToken(tokenString)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	userID := claims.UserID
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-
-	// generate new id for client
-	userID := r.URL.Query().Get("uid")
-	if userID == "" {
-		userID = "guest"
-	}
-
 	client := &service.Client{
 		Hub:  hub,
 		Conn: conn,
@@ -36,7 +36,6 @@ func ServeWs(hub *service.Hub, w http.ResponseWriter, r *http.Request) {
 		ID:   userID,
 	}
 
-	client.Hub.Register <- client
 	client.Hub.Register <- client
 
 	// --- 添加：拉取离线消息 ---
