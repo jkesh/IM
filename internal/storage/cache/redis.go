@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"IM/internal/config"
 	"context"
 
 	"github.com/redis/go-redis/v9"
@@ -11,10 +12,20 @@ var (
 	Ctx = context.Background()
 )
 
-func InitRedis() {
-	RDB = redis.NewClient(&redis.Options{
-		Addr:     "43.131.41.101:6379", // 确保你本地或服务器已安装 Redis
-		Password: "jkesh1024",          // 没有密码则留空
-		DB:       0,                    // 默认数据库
+func InitRedis(cfg config.RedisConfig) error {
+	client := redis.NewClient(&redis.Options{
+		Addr:     cfg.Addr,
+		Password: cfg.Password,
+		DB:       cfg.DB,
 	})
+	if err := client.Ping(Ctx).Err(); err != nil {
+		return err
+	}
+
+	RDB = client
+	return nil
+}
+
+func Available() bool {
+	return RDB != nil
 }

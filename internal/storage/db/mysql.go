@@ -1,8 +1,10 @@
 package db
 
 import (
+	"IM/internal/config"
 	"IM/internal/model"
-	"log"
+	"errors"
+	"strings"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -10,14 +12,28 @@ import (
 
 var DB *gorm.DB
 
-func InitDB() {
-	dsn := "root:jkesh1024@tcp(43.131.41.101:3306)/im_system?charset=utf8mb4&parseTime=True&loc=Local"
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	if err != nil {
-		log.Fatal("数据库连接失败:", err)
+func InitDB(cfg config.DatabaseConfig) error {
+	if strings.TrimSpace(cfg.DSN) == "" {
+		return errors.New("mysql dsn is required")
 	}
 
-	// 自动迁移：根据 User 结构体自动创建表
-	db.AutoMigrate(&model.User{})
-	DB = db
+	database, err := gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{})
+	if err != nil {
+		return err
+	}
+
+	sqlDB, err := database.DB()
+	if err != nil {
+		return err
+	}
+	if err := sqlDB.Ping(); err != nil {
+		return err
+	}
+
+	if err := database.AutoMigrate(&model.User{}, &model.Message{}); err != nil {
+		return err
+	}
+
+	DB = database
+	return nil
 }

@@ -10,24 +10,25 @@ import (
 )
 
 type Hub struct {
-	//已注册的客户端
-	Clients map[string]*Client
-	//广播消息
-	Broadcast chan []byte
-	//注册请求通道
-	Register chan *Client
-	//注销通道
+	Clients    map[string]*Client
+	Broadcast  chan []byte
+	Register   chan *Client
 	Unregister chan *Client
-	//加锁
-	mu sync.RWMutex
+	offlineTTL time.Duration
+	mu         sync.RWMutex
 }
 
-func NewHub() *Hub {
+func NewHub(offlineTTL time.Duration) *Hub {
+	if offlineTTL <= 0 {
+		offlineTTL = 7 * 24 * time.Hour
+	}
+
 	return &Hub{
 		Broadcast:  make(chan []byte),
 		Register:   make(chan *Client),
 		Unregister: make(chan *Client),
 		Clients:    make(map[string]*Client),
+		offlineTTL: offlineTTL,
 	}
 }
 
@@ -35,44 +36,96 @@ func (h *Hub) Run() {
 	for {
 		select {
 		case client := <-h.Register:
-			h.mu.Lock()
-			h.Clients[client.ID] = client
-			h.mu.Unlock()
+			h.addClient(client)
 		case client := <-h.Unregister:
-			h.mu.Lock()
-			if _, ok := h.Clients[client.ID]; ok {
-				delete(h.Clients, client.ID)
-				close(client.Send)
-			}
-			h.mu.Unlock()
-
-			// 在 hub.go 的 Run() 函数中修改 Broadcast 分支
+			h.removeClient(client)
 		case msgBytes := <-h.Broadcast:
-			var msg model.Message
-			if err := json.Unmarshal(msgBytes, &msg); err != nil {
-				log.Println("消息解析失败:", err)
-				continue
-			}
-
-			h.mu.RLock()
-			if msg.Type == 1 { // 私聊
-				if targetClient, ok := h.Clients[msg.Target]; ok {
-					targetClient.Send <- msgBytes
-				} else {
-					// --- 核心亮点：存入 Redis 离线列表 ---
-					// 使用 RPush 将消息存入名为 "offline:用户ID" 的 List 中
-					cache.RDB.RPush(cache.Ctx, "offline:"+msg.Target, msgBytes)
-					// 设置过期时间（如 7 天），防止 Redis 内存被僵尸用户撑爆
-					cache.RDB.Expire(cache.Ctx, "offline:"+msg.Target, time.Hour*24*7)
-				}
-			} else { // 群聊逻辑
-				for _, client := range h.Clients {
-					// 排除自己或发送给所有人
-					client.Send <- msgBytes
-				}
-			}
-			h.mu.RUnlock()
+			h.dispatch(msgBytes)
 		}
+	}
+}
 
+func (h *Hub) dispatch(msgBytes []byte) {
+	var msg model.Message
+	if err := json.Unmarshal(msgBytes, &msg); err != nil {
+		log.Printf("unmarshal broadcast message failed: %v", err)
+		return
+	}
+
+	switch msg.Type {
+	case model.MessageTypePrivate:
+		h.dispatchPrivate(msg.Target, msgBytes)
+	case model.MessageTypeGroup:
+		for _, client := range h.listClients() {
+			h.send(client, msgBytes)
+		}
+	}
+}
+
+func (h *Hub) dispatchPrivate(target string, msgBytes []byte) {
+	targetClient, ok := h.getClient(target)
+	if ok {
+		h.send(targetClient, msgBytes)
+		return
+	}
+
+	if !cache.Available() {
+		return
+	}
+
+	offlineKey := "offline:" + target
+	if err := cache.RDB.RPush(cache.Ctx, offlineKey, msgBytes).Err(); err != nil {
+		log.Printf("push offline message failed: %v", err)
+		return
+	}
+	if err := cache.RDB.Expire(cache.Ctx, offlineKey, h.offlineTTL).Err(); err != nil {
+		log.Printf("set offline message ttl failed: %v", err)
+	}
+}
+
+func (h *Hub) addClient(client *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.Clients[client.ID] = client
+}
+
+func (h *Hub) removeClient(client *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	registeredClient, ok := h.Clients[client.ID]
+	if !ok || registeredClient != client {
+		return
+	}
+
+	delete(h.Clients, client.ID)
+	close(client.Send)
+}
+
+func (h *Hub) getClient(userID string) (*Client, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	client, ok := h.Clients[userID]
+	return client, ok
+}
+
+func (h *Hub) listClients() []*Client {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	clients := make([]*Client, 0, len(h.Clients))
+	for _, client := range h.Clients {
+		clients = append(clients, client)
+	}
+	return clients
+}
+
+func (h *Hub) send(client *Client, msgBytes []byte) {
+	select {
+	case client.Send <- msgBytes:
+	default:
+		h.removeClient(client)
+		client.Conn.Close()
 	}
 }
